@@ -1,0 +1,184 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>园区实时监控</title>
+    <style>
+        html, body { width: 100%; height: 100%; margin: 0; padding: 0; overflow: hidden; font-family: sans-serif; }
+        #map { width: 100%; height: 100%; }
+        #panel {
+            position: absolute; top: 10px; left: 10px; z-index: 999;
+            background: rgba(255, 255, 255, 0.95); padding: 15px; border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.2); width: 300px;
+        }
+        .log-item { margin-top: 5px; font-size: 13px; padding-bottom: 3px; border-bottom: 1px dashed #eee;}
+        .status-in { color: green; font-weight: bold; }
+        .status-out { color: red; font-weight: bold; }
+        .status-building { color: #e67e22; font-weight: bold; background: #fff3e0; padding: 2px 5px; border-radius: 3px;}
+  
+        /* AI 聊天框样式 */
+        #chat-container {
+            position: absolute; right: 20px; bottom: 20px; width: 300px; height: 400px;
+            background: white; border-radius: 10px; box-shadow: 0 4px 15px rgba(0,0,0,0.2);
+            display: flex; flex-direction: column; z-index: 1000; overflow: hidden;
+        }
+        #chat-header { background: #1E90FF; color: white; padding: 10px; font-weight: bold; text-align: center; }
+        #chat-messages { flex: 1; padding: 10px; overflow-y: auto; background: #f9f9f9; }
+        .msg { margin-bottom: 10px; padding: 8px 12px; border-radius: 8px; max-width: 80%; font-size: 13px; line-height: 1.4; }
+        .msg.user { background: #DCF8C6; margin-left: auto; text-align: right; }
+        .msg.ai { background: #fff; border: 1px solid #ddd; }
+        #chat-input-area { display: flex; border-top: 1px solid #ddd; padding: 5px; background: white;}
+        #chat-input { flex: 1; border: none; padding: 8px; outline: none; }
+        #chat-input-area button { background: #1E90FF; color: white; border: none; padding: 8px 15px; border-radius: 5px; cursor: pointer; }
+    </style>
+    <script type="text/javascript" src="https://api.map.baidu.com/api?v=3.0&YOUR_BAIDU_AK"></script>
+</head>
+<body>
+    <div id="panel">
+        <h3>🏢 园区监控面板</h3>
+        <div id="status">
+            <p>人员 (user_001): <span id="user-status">加载中...</span></p>
+            <p>车辆 (京A88888): <span id="car-status">加载中...</span></p>
+        </div>
+        <hr>
+        <div id="logs" style="max-height: 200px; overflow-y: auto;">
+            <p style="font-size:12px; color:#666; margin:0;">实时进出日志:</p>
+        </div>
+    </div>
+    <div id="map"></div>
+
+    <script type="text/javascript">
+        var map = new BMap.Map("map");
+
+        var centerCoords = {{ center | tojson }};
+        var centerPoint = new BMap.Point(centerCoords[0], centerCoords[1]);
+
+        // 调整缩放级别为 17，视野刚好能包住整个大园区
+        map.centerAndZoom(centerPoint, 17);
+        map.enableScrollWheelZoom(true);
+
+        // 绘制【园区】大围栏 (蓝色)
+        var parkCoords = {{ park_boundary | tojson }};
+        var parkPoints = parkCoords.map(function(coord) { return new BMap.Point(coord[0], coord[1]); });
+        var parkPolygon = new BMap.Polygon(parkPoints, {
+            strokeColor: "#1E90FF", strokeWeight: 2, strokeOpacity: 0.5, fillColor: "#87CEFA", fillOpacity: 0.1
+        });
+        map.addOverlay(parkPolygon);
+
+        // 绘制【B座】小围栏 (红色)
+        var buildCoords = {{ building_boundary | tojson }};
+        var buildPoints = buildCoords.map(function(coord) { return new BMap.Point(coord[0], coord[1]); });
+        var buildPolygon = new BMap.Polygon(buildPoints, {
+            strokeColor: "#FF0000", strokeWeight: 2, strokeOpacity: 0.8, fillColor: "#FF6347", fillOpacity: 0.4
+        });
+        map.addOverlay(buildPolygon);
+
+        // 创建图标
+        var userIcon = new BMap.Icon("/static/user.png", new BMap.Size(30, 30), {
+    imageSize: new BMap.Size(32, 32) // 强制统一显示为 32x32 的尺寸
+});
+
+        var carIcon = new BMap.Icon("/static/car.png", new BMap.Size(30, 30), {
+    imageSize: new BMap.Size(32, 32)
+});
+
+var userMarker = new BMap.Marker(centerPoint, {icon: userIcon});
+var carMarker = new BMap.Marker(centerPoint, {icon: carIcon});
+        map.addOverlay(userMarker);
+        map.addOverlay(carMarker);
+
+        function updateStatusClass(el, status) {
+            el.innerText = status;
+            if (status === 'B座内') el.className = 'status-building';
+            else if (status === '园内') el.className = 'status-in';
+            else el.className = 'status-out';
+        }
+
+        function fetchData() {
+            fetch('/api/get_locations')
+                .then(response => response.json())
+                .then(res => {
+                    var data = res.data;
+                    var logs = res.logs;
+
+                    var userPoint = new BMap.Point(data["user_001"].lon, data["user_001"].lat);
+                    userMarker.setPosition(userPoint);
+                    updateStatusClass(document.getElementById("user-status"), data["user_001"].status);
+
+                    var carPoint = new BMap.Point(data["car_京A88888"].lon, data["car_京A88888"].lat);
+                    carMarker.setPosition(carPoint);
+                    updateStatusClass(document.getElementById("car-status"), data["car_京A88888"].status);
+
+                    if (logs && logs.length > 0) {
+                        var logsDiv = document.getElementById("logs");
+                        logs.forEach(function(log) {
+                            var p = document.createElement("div");
+                            p.className = "log-item";
+                            p.innerText = log;
+                            if(log.includes("B座")) p.style.color = "#e67e22";
+                            else p.style.color = "#d32f2f";
+                            logsDiv.appendChild(p);
+                            logsDiv.scrollTop = logsDiv.scrollHeight;
+                        });
+                    }
+                })
+                .catch(error => console.error('Error:', error));
+        }
+
+        setInterval(fetchData, 3000);
+        fetchData();
+        // ==========================================
+        // 以下是新增的 AI 聊天功能逻辑
+        // ==========================================
+        function handleKeyPress(e) {
+            if (e.key === 'Enter') sendMessage();
+        }
+
+        function sendMessage() {
+            const input = document.getElementById('chat-input');
+            const msg = input.value.trim();
+            if (!msg) return;
+            
+            addMessageToUI(msg, 'user');
+            input.value = '';
+
+            // 注意这里是发给 Java 的 8080 端口
+            fetch('http://127.0.0.1:8080/api/chat', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ message: msg })
+            })
+            .then(res => res.json())
+            .then(data => {
+                addMessageToUI(data.reply, 'ai');
+            })
+            .catch(err => {
+                addMessageToUI("网络请求失败，请检查Java后端(8080)是否启动。", 'ai');
+            });
+        }
+
+        function addMessageToUI(text, sender) {
+            const messagesDiv = document.getElementById('chat-messages');
+            const div = document.createElement('div');
+            div.className = `msg ${sender}`;
+            div.innerText = text;
+            messagesDiv.appendChild(div);
+            messagesDiv.scrollTop = messagesDiv.scrollHeight;
+        }
+ 
+
+
+   </script>
+    <!-- 悬浮 AI 聊天框 -->
+    <div id="chat-container">
+        <div id="chat-header">🤖 望京科技园 AI 管家</div>
+        <div id="chat-messages">
+            <div class="msg ai">您好，我是园区 AI 助手，您可以问我人车进出情况。</div>
+        </div>
+        <div id="chat-input-area">
+            <input type="text" id="chat-input" placeholder="输入您的问题..." onkeypress="handleKeyPress(event)">
+            <button onclick="sendMessage()">发送</button>
+        </div>
+    </div>
+</body>
+</html>
